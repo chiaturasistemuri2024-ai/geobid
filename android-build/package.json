@@ -1,0 +1,11 @@
+{
+  "name": "savele-azomva-apk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "საველე აზომვა — Android აპი (Capacitor) Bluetooth GNSS მიმღების მხარდაჭერით",
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/cli": "^6.2.0",
+    "@capacitor/core": "^6.2.0"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "appId": "ge.kadastr.savele",
+  "appName": "საველე აზომვა",
+  "webDir": "www",
+  "server": {
+    "url": "https://azome.netlify.app",
+    "androidScheme": "https"
+  }
+}
