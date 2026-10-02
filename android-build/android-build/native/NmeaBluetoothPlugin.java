@@ -240,98 +240,177 @@ public class NmeaBluetoothPlugin extends Plugin {
         ntripThread = new Thread(new Runnable() {
             @Override
             public void run() {
-                long total = 0;
                 try {
-                    ntripStatus("connecting", null, 0);
-                    Socket s = new Socket();
-                    s.connect(new InetSocketAddress(host.trim(), port), 10000);
-                    s.setSoTimeout(10000);
-                    ntripSock = s;
-                    OutputStream os = s.getOutputStream();
-                    InputStream is = s.getInputStream();
-
-                    String auth = Base64.encodeToString((user + ":" + pass).getBytes("UTF-8"), Base64.NO_WRAP);
-                    String req = "GET /" + mount.trim() + " HTTP/1.0\r\n"
-                        + "User-Agent: NTRIP SaveleAzomva/1.0\r\n"
-                        + "Accept: */*\r\n"
-                        + "Authorization: Basic " + auth + "\r\n"
-                        + "Connection: close\r\n\r\n";
-                    os.write(req.getBytes("US-ASCII"));
-                    os.flush();
-
-                    // პასუხის პირველი ხაზი
-                    String first = readLine(is);
-                    if (first == null) {
-                        ntripStatus("error", "კასტერმა არ უპასუხა", 0);
-                        ntripRun = false;
-                        return;
+                    int code = 1;
+                    for (int attempt = 0; attempt < 2 && ntripRun; attempt++) {
+                        code = ntripOnce(host, port, mount, user, pass, attempt == 1);
+                        if (code != 1) break;
+                        closeNtripSocket();
                     }
-                    if (first.startsWith("ICY 200")) {
-                        // NTRIP v1: მონაცემები მაშინვე იწყება
-                    } else if (first.startsWith("HTTP/") && first.contains(" 200")) {
-                        // HTTP ჰედერების ბოლომდე წაკითხვა
-                        String h;
-                        while ((h = readLine(is)) != null && !h.isEmpty()) {
-                            // ჰედერები გამოტოვებულია
-                        }
-                    } else {
-                        String m = first;
-                        if (first.contains("401")) m = "ლოგინი ან პაროლი არასწორია (401)";
-                        else if (first.contains("403")) m = "წვდომა აკრძალულია (403)";
-                        else if (first.toUpperCase().contains("SOURCETABLE")) m = "მაუნთფოინთი არ მოიძებნა (SOURCETABLE)";
-                        ntripStatus("error", m, 0);
-                        ntripRun = false;
-                        return;
-                    }
-
-                    ntripStatus("connected", null, 0);
-                    s.setSoTimeout(1000);
-                    byte[] buf = new byte[2048];
-                    long lastGgaSent = 0;
-                    long lastStatus = 0;
-                    while (ntripRun) {
-                        long now = System.currentTimeMillis();
-                        String g = lastGga;
-                        if (g != null && now - lastGgaSent > 5000) {
-                            os.write((g + "\r\n").getBytes("US-ASCII"));
-                            os.flush();
-                            lastGgaSent = now;
-                        }
-                        int n;
-                        try {
-                            n = is.read(buf);
-                        } catch (SocketTimeoutException te) {
-                            continue;
-                        }
-                        if (n < 0) break;
-                        if (n > 0) {
-                            BluetoothSocket b = socket;
-                            if (b != null) {
-                                synchronized (writeLock) {
-                                    b.getOutputStream().write(buf, 0, n);
-                                    b.getOutputStream().flush();
-                                }
-                            }
-                            total += n;
-                        }
-                        if (now - lastStatus > 1000) {
-                            lastStatus = now;
-                            ntripStatus("connected", null, total);
-                        }
+                    if (code == 1 && ntripRun) {
+                        ntripStatus("error", "კასტერი არ პასუხობს (v1 და v2 ცდა)", 0);
                     }
                 } catch (Exception e) {
-                    if (ntripRun) ntripStatus("error", e.getMessage(), total);
+                    if (ntripRun) ntripStatus("error", String.valueOf(e.getMessage()), 0);
                 } finally {
                     closeNtripSocket();
                     if (ntripRun) {
                         ntripRun = false;
-                        ntripStatus("closed", null, total);
+                        ntripStatus("closed", null, 0);
                     }
                 }
             }
         });
         ntripThread.start();
         call.resolve();
+    }
+
+    /** 0 = სესია დასრულდა, 1 = პასუხი არ მოვიდა (ვცადოთ სხვა პროტოკოლი), 2 = საბოლოო შეცდომა (ლოგინი/მაუნთფოინთი). */
+    private int ntripOnce(String host, int port, String mount, String user, String pass, boolean v2) throws Exception {
+        final String tag = v2 ? "v2" : "v1";
+        ntripStatus("connecting", tag + " · TCP…", 0);
+        final Socket s = new Socket();
+        s.connect(new InetSocketAddress(host.trim(), port), 10000);
+        s.setSoTimeout(8000);
+        ntripSock = s;
+        final OutputStream os = s.getOutputStream();
+        InputStream is = s.getInputStream();
+
+        String auth = Base64.encodeToString((user + ":" + pass).getBytes("UTF-8"), Base64.NO_WRAP);
+        String req;
+        if (v2) {
+            req = "GET /" + mount.trim() + " HTTP/1.1\r\n"
+                + "Host: " + host.trim() + ":" + port + "\r\n"
+                + "Ntrip-Version: Ntrip/2.0\r\n"
+                + "User-Agent: NTRIP SaveleAzomva/1.0\r\n"
+                + "Authorization: Basic " + auth + "\r\n"
+                + "Connection: close\r\n\r\n";
+        } else {
+            req = "GET /" + mount.trim() + " HTTP/1.0\r\n"
+                + "User-Agent: NTRIP SaveleAzomva/1.0\r\n"
+                + "Accept: */*\r\n"
+                + "Authorization: Basic " + auth + "\r\n"
+                + "Connection: close\r\n\r\n";
+        }
+        os.write(req.getBytes("US-ASCII"));
+        os.flush();
+        ntripStatus("connecting", tag + " · მოთხოვნა გაიგზავნა, ველოდები პასუხს…", 0);
+        String g0 = lastGga;
+        if (g0 != null) {
+            os.write((g0 + "\r\n").getBytes("US-ASCII"));
+            os.flush();
+        }
+
+        String first;
+        try {
+            first = readLine(is);
+        } catch (SocketTimeoutException te) {
+            ntripStatus("connecting", tag + " · პასუხი არ მოვიდა (8 წმ)", 0);
+            return 1;
+        }
+        if (first == null) {
+            ntripStatus("connecting", tag + " · კასტერმა კავშირი დახურა", 0);
+            return 1;
+        }
+        boolean chunked = false;
+        if (first.startsWith("ICY 200")) {
+            // NTRIP v1: მონაცემები მაშინვე იწყება
+        } else if (first.startsWith("HTTP/") && first.contains(" 200")) {
+            String h;
+            while ((h = readLine(is)) != null && !h.isEmpty()) {
+                String l = h.toLowerCase();
+                if (l.contains("transfer-encoding") && l.contains("chunked")) chunked = true;
+            }
+        } else {
+            String m = tag + " · პასუხი: " + first;
+            boolean fatal = false;
+            if (first.contains("401")) { m = "ლოგინი ან პაროლი არასწორია (401)"; fatal = true; }
+            else if (first.contains("403")) { m = "წვდომა აკრძალულია (403)"; fatal = true; }
+            else if (first.toUpperCase().contains("SOURCETABLE")) { m = "მაუნთფოინთი არ მოიძებნა (SOURCETABLE)"; fatal = true; }
+            ntripStatus(fatal ? "error" : "connecting", m, 0);
+            if (fatal) {
+                ntripRun = false;
+                return 2;
+            }
+            return 1;
+        }
+
+        ntripStatus("connected", tag + (chunked ? " (chunked)" : ""), 0);
+        s.setSoTimeout(15000);
+        // GGA-ს პერიოდული გაგზავნა (VRS)
+        final Thread gt = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    while (ntripRun && ntripSock == s) {
+                        Thread.sleep(5000);
+                        String g = lastGga;
+                        if (g != null) {
+                            synchronized (s) {
+                                os.write((g + "\r\n").getBytes("US-ASCII"));
+                                os.flush();
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        });
+        gt.start();
+
+        byte[] buf = new byte[2048];
+        int[] remaining = new int[] { 0 };
+        long total = 0;
+        long lastStatus = 0;
+        int idle = 0;
+        while (ntripRun) {
+            int n;
+            try {
+                n = chunked ? readChunk(is, buf, remaining) : is.read(buf);
+            } catch (SocketTimeoutException te) {
+                idle++;
+                ntripStatus("connected", tag + " · კორექციები არ მოდის (" + (idle * 15) + " წმ)", total);
+                if (idle >= 4) return 1;
+                continue;
+            }
+            if (n < 0) break;
+            idle = 0;
+            if (n > 0) {
+                BluetoothSocket b = socket;
+                if (b != null) {
+                    synchronized (writeLock) {
+                        b.getOutputStream().write(buf, 0, n);
+                        b.getOutputStream().flush();
+                    }
+                }
+                total += n;
+            }
+            long now = System.currentTimeMillis();
+            if (now - lastStatus > 1000) {
+                lastStatus = now;
+                ntripStatus("connected", tag, total);
+            }
+        }
+        return 0;
+    }
+
+    private int readChunk(InputStream is, byte[] buf, int[] remaining) throws Exception {
+        if (remaining[0] == 0) {
+            String l = readLine(is);
+            if (l == null) return -1;
+            l = l.trim();
+            if (l.isEmpty()) {
+                l = readLine(is);
+                if (l == null) return -1;
+                l = l.trim();
+            }
+            int sz = Integer.parseInt(l.split(";")[0].trim(), 16);
+            if (sz == 0) return -1;
+            remaining[0] = sz;
+        }
+        int n = is.read(buf, 0, Math.min(buf.length, remaining[0]));
+        if (n > 0) remaining[0] -= n;
+        return n;
     }
 
     private String readLine(InputStream is) throws Exception {
